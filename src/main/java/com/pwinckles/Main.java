@@ -1,14 +1,13 @@
 package com.pwinckles;
 
-import java.beans.PropertyVetoException;
+import com.zaxxer.hikari.HikariDataSource;
 import java.sql.Connection;
-import java.sql.DriverManager;
 import java.sql.SQLException;
+import java.time.Duration;
+import java.time.Instant;
 import java.util.List;
 import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
-
-import com.mchange.v2.c3p0.ComboPooledDataSource;
 import org.hsqldb.Server;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -18,7 +17,14 @@ public final class Main {
     private static final Logger log = LoggerFactory.getLogger(Main.class);
 
     private static final List<String> MODES = List.of("LOCKS", "MVLOCKS", "MVCC");
-    private static volatile ComboPooledDataSource c3p0;
+    private static final HikariDataSource hikari = new HikariDataSource();
+
+    static {
+        hikari.setJdbcUrl("jdbc:hsqldb:hsql://localhost/testdb");
+        hikari.setUsername("SA");
+        hikari.setPassword("");
+        hikari.setMaximumPoolSize(50);
+    }
 
     public static void main(String[] args) throws Exception {
         if (args.length != 1 || !MODES.contains(args[0].toUpperCase())) {
@@ -29,8 +35,6 @@ public final class Main {
         server.setDatabaseName(0, "testdb");
         server.setDatabasePath(0, "mem:testdb");
         server.start();
-
-        initC3P0Pool();
 
         try (var conn = newConnection()) {
             setupDb(args[0]);
@@ -43,10 +47,16 @@ public final class Main {
                         try (var c = newConnection();
                                 var statement = c.createStatement()) {
                             c.setAutoCommit(false);
+                            var start = Instant.now();
                             statement.execute("INSERT INTO test (value) VALUES ('abc')");
-                            TimeUnit.SECONDS.sleep(1);
+                            var duration = Duration.between(start, Instant.now());
+                            var remaining = Duration.ofSeconds(1).minus(duration);
+                            if (remaining.isPositive()) {
+                                TimeUnit.NANOSECONDS.sleep(remaining.getNano());
+                            }
                             statement.execute("COMMIT");
                         } catch (Exception e) {
+                            log.error("Failure " + index, e);
                             throw new RuntimeException(e);
                         }
                         log.info("After {}", index);
@@ -67,16 +77,6 @@ public final class Main {
     }
 
     private static Connection newConnection() throws SQLException {
-        return DriverManager.getConnection("jdbc:hsqldb:hsql://localhost/testdb", "SA", "");
-//        return c3p0.getConnection();
+        return hikari.getConnection();
     }
-
-    private static void initC3P0Pool() throws PropertyVetoException {
-        c3p0 = new ComboPooledDataSource();
-        c3p0.setDriverClass("org.hsqldb.jdbcDriver");
-        c3p0.setJdbcUrl("jdbc:hsqldb:hsql://localhost/testdb");
-        c3p0.setUser("SA");
-        c3p0.setPassword("");
-    }
-
 }
